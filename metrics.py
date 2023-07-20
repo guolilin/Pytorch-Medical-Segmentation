@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 import numpy as np
 import copy
+from medpy.metric.binary import hd, hd95
 from torchio.transforms import (
     RandomFlip,
     RandomAffine,
@@ -20,54 +21,45 @@ from torchio.transforms import (
     Compose,
 )
 
-
-
-predict_dir = '/data0/my_project/med/seg_3d/results_6-10'
-labels_dir = '/data2/zkndataset/med/unet/test'
-
-# predict_dir = '/data0/my_project/med/seg_3d/results'
-# labels_dir = '/data2/zkndataset/med/unet/label'
-
-
 def do_subject(image_paths, label_paths):
+    subjects = []
     for (image_path, label_path) in zip(image_paths, label_paths):
+        print(image_path)
+        print(label_path)
         subject = tio.Subject(
             pred=tio.ScalarImage(image_path),
             gt=tio.LabelMap(label_path),
         )
         subjects.append(subject)
+    return subjects
+
+# predict_dir = './results/adam_residual_unet3d/train'
+# labels_dir = './dataset/train_label'
+
+predict_dir = './results/adam_vnet/test'
+labels_dir = './dataset/test_label'
+
+# predict_dir = './results/adam_residual_unet3d/debug'
+# labels_dir = './dataset/debug_label'
 
 images_dir = Path(predict_dir)
 labels_dir = Path(labels_dir)
 
-image_paths = sorted(images_dir.glob('*.mhd'))
-label_paths = sorted(labels_dir.glob('*/*.mhd'))
+image_paths = sorted(images_dir.glob('*.nii.gz'))
+label_paths = sorted(labels_dir.glob('*.nii.gz'))
 
-
-subjects = []
-do_subject(image_paths, label_paths)
-
-training_set = tio.SubjectsDataset(subjects)
-
-
-toc = ToCanonical()
-
-for i,subj in enumerate(training_set.subjects):
+training_set = do_subject(image_paths, label_paths)
+pre = 0.0
+rec = 0.0
+dsc = 0.0
+for i,subj in enumerate(training_set):
     gt = subj['gt'][tio.DATA]
-
-    # subj = toc(subj)
     pred = subj['pred'][tio.DATA]#.permute(0,1,3,2)
-
-    # preds.append(pred)
-    # gts.append(gt)
-
-
-
 
     preds = pred.numpy()
     gts = gt.numpy()
 
-
+    gts[gts == 2] = 0
 
     pred = preds.astype(int)  # float data does not support bit_and and bit_or
     gdth = gts.astype(int)  # float data does not support bit_and and bit_or
@@ -102,6 +94,15 @@ for i,subj in enumerate(training_set.subjects):
     jaccard = intersection_sum / (union_sum + smooth)
     dice = 2 * intersection_sum / (gdth_sum + pred_sum + smooth)
 
-    print(false_positive_rate)
-    print(false_negtive_rate)
-    print(dice)
+    print('precision:', precision)
+    print('recall:   ', recall)
+    print('dice:     ', dice)
+    print(tp, fp, tn, fn)
+    pre += precision
+    rec += recall
+    dsc += dice
+
+print('-----------------------------')
+print('precision:', pre / len(training_set))
+print('recall:   ', rec / len(training_set))
+print('dice:     ', dsc / len(training_set))

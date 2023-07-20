@@ -6,6 +6,9 @@ import time
 import argparse
 import numpy as np
 from PIL import Image
+import copy
+from medpy.metric.binary import hd, hd95
+import surface_distance as surfdist
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -14,6 +17,7 @@ from torchvision import transforms
 import torch.distributed as dist
 import math
 import torchio
+import torchio as tio
 from torchio.transforms import (
     ZNormalization,
 )
@@ -28,7 +32,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 source_train_dir = hp.source_train_dir
 label_train_dir = hp.label_train_dir
-
+loc_train_dir = hp.loc_train_dir
 
 source_test_dir = hp.source_test_dir
 label_test_dir = hp.label_test_dir
@@ -121,20 +125,20 @@ def train():
         #from models.three_d.fcn3d import FCN_Net
         #model = FCN_Net(in_channels =hp.in_class,n_class =hp.out_class+1)
 
-        #from models.three_d.highresnet import HighRes3DNet
-        #model = HighRes3DNet(in_channels=hp.in_class,out_channels=hp.out_class+1)
+        # from models.three_d.highresnet import HighRes3DNet
+        # model = HighRes3DNet(in_channels=hp.in_class,out_channels=hp.out_class+1)
 
-        #from models.three_d.densenet3d import SkipDenseNet3D
-        #model = SkipDenseNet3D(in_channels=hp.in_class, classes=hp.out_class+1)
+        # from models.three_d.densenet3d import SkipDenseNet3D
+        # model = SkipDenseNet3D(in_channels=hp.in_class, classes=hp.out_class+1)
 
         # from models.three_d.densevoxelnet3d import DenseVoxelNet
         # model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        #from models.three_d.vnet3d import VNet
-        #model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
+        # from models.three_d.vnet3d import VNet
+        # model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        #from models.three_d.unetr import UNETR
-        #model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
+        # from models.three_d.unetr import UNETR
+        # model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
 
 
 
@@ -172,12 +176,11 @@ def train():
     criterion_ce = CrossEntropyLoss().cuda()
 
 
-    writer = SummaryWriter(args.output_dir)
 
 
 
-    train_dataset = MedData_train(source_train_dir,label_train_dir)
-    train_loader = DataLoader(train_dataset.queue_dataset, 
+    train_dataset = MedData_train(source_train_dir,label_train_dir,loc_train_dir)
+    train_loader = DataLoader(train_dataset.subjects,
                             batch_size=args.batch, 
                             shuffle=True,
                             pin_memory=True,
@@ -192,9 +195,14 @@ def train():
 
     for epoch in range(1, epochs + 1):
         print("epoch:"+str(epoch))
+        print('lr:' + str(scheduler._last_lr[0]))
         epoch += elapsed_epochs
 
         num_iters = 0
+        epoch_loss = 0.0
+        epoch_pre = 0.0
+        epoch_rec = 0.0
+        epoch_dice = 0.0
 
 
         for i, batch in enumerate(train_loader):
@@ -213,11 +221,10 @@ def train():
                 x = batch['source']['data']
                 y = batch['label']['data']
 
-                #y[y!=0] = 1 
+                y[y>1] = 0
                 y_back = torch.zeros_like(y)
                 # y_back[(y==0) ^ (y_L_TL==0) ^ (y_R_TL==0)]=1
                 y_back[(y==0)]=1
-
 
                 x = x.type(torch.FloatTensor).cuda()
                 y = torch.cat((y_back, y),1) 
@@ -229,7 +236,6 @@ def train():
                 y_lung = batch['lung']['data']
                 y_trachea = batch['trachea']['data']
                 y_vein = batch['atery']['data']
-
 
                 y_back = torch.zeros_like(y_atery)
                 y_back[(y_atery==0) ^ (y_lung==0) ^ (y_trachea==0) ^ (y_vein==0)]=1
@@ -250,6 +256,8 @@ def train():
                 #print(y.max())
                 
             outputs = model(x)
+            # print(outputs.shape)  torch.Size([2, 2, 32, 32, 32])
+            # print(y.argmax(dim=1).shape) torch.Size([2, 32, 32, 32])
 
 
             # for metrics
@@ -257,7 +265,8 @@ def train():
             model_output_one_hot = torch.nn.functional.one_hot(labels, num_classes=hp.out_class+1).permute(0,4,1,2,3)
 
 
-            loss = criterion_ce(outputs, y.argmax(dim=1)) + criterion_dice(outputs, y.argmax(dim=1))
+            #loss = criterion_ce(outputs, y.argmax(dim=1)) + criterion_dice(outputs, y.argmax(dim=1))
+            loss = criterion_ce(outputs, y.argmax(dim=1)) + criterion_dice(outputs, y)
 
 
 
@@ -279,24 +288,23 @@ def train():
             y_argmax = y.argmax(dim=1)
             y_one_hot = torch.nn.functional.one_hot(y_argmax, num_classes=hp.out_class+1).permute(0,4,1,2,3)
  
-            false_positive_rate,false_negtive_rate,dice = metric(y_one_hot[:,1:,:,:].cpu(),model_output_one_hot[:,1:,:,:].cpu())
-    
+            precision,recall,dice = metric(y_one_hot[:,1:,:,:].cpu(),model_output_one_hot[:,1:,:,:].cpu())
+            print("loss: "+str(loss.item()))
+            # print("precision: " + str(precision))
+            # print("recall: " + str(recall))
+            # print("dice: " + str(dice))
 
+            epoch_loss += loss.item()
+            epoch_pre += precision
+            epoch_rec += recall
+            epoch_dice += dice
 
+        epoch_loss = epoch_loss / len(train_loader)
+        epoch_pre = epoch_pre / len(train_loader)
+        epoch_rec = epoch_rec / len(train_loader)
+        epoch_dice = epoch_dice / len(train_loader)
 
-            # false_positive_rate,false_negtive_rate,dice = metric(y.cpu(),labels.cpu())
-            ## log
-            writer.add_scalar('Training/Loss', loss.item(),iteration)
-            writer.add_scalar('Training/false_positive_rate', false_positive_rate,iteration)
-            writer.add_scalar('Training/false_negtive_rate', false_negtive_rate,iteration)
-            writer.add_scalar('Training/dice', dice,iteration)
-            
-
-
-            print("loss:"+str(loss.item()))
-            print('lr:'+str(scheduler._last_lr[0]))
-
-            
+        print(">>>>>>>>>>>>>>> epoch: " + str(epoch) + ' loss: ' + str(epoch_loss), epoch_pre, epoch_rec, epoch_dice)
 
         scheduler.step()
 
@@ -326,7 +334,7 @@ def train():
                     "optim": optimizer.state_dict(),
                     "epoch": epoch,
                 },
-                os.path.join(args.output_dir, f"checkpoint_{epoch:04d}.pt"),
+                os.path.join(args.output_dir, f"checkpoint_{epoch:04d}_{str(epoch_loss)[:7]}.pt"),
             )
         
 
@@ -347,54 +355,99 @@ def train():
 
 
 
-                if (hp.in_class == 1) and (hp.out_class == 1) :
-                    y = np.expand_dims(y, axis=1)
-                    outputs = np.expand_dims(outputs, axis=1)
-                    model_output_one_hot = np.expand_dims(model_output_one_hot, axis=1)
+                # if (hp.in_class == 1) and (hp.out_class == 1) :
+                #     y = np.expand_dims(y, axis=1)
+                #     outputs = np.expand_dims(outputs, axis=1)
+                #     model_output_one_hot = np.expand_dims(model_output_one_hot, axis=1)
+                #
+                #     source_image = torchio.ScalarImage(tensor=x, affine=affine)
+                #     source_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-source"+hp.save_arch))
+                #     # source_image.save(os.path.join(args.output_dir,("step-{}-source.mhd").format(epoch)))
+                #
+                #     label_image = torchio.ScalarImage(tensor=y[1], affine=affine)
+                #     label_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt"+hp.save_arch))
+                #
+                #     output_image = torchio.ScalarImage(tensor=model_output_one_hot[1], affine=affine)
+                #     output_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict"+hp.save_arch))
+                # else:
+                #     y = np.expand_dims(y, axis=1)
+                #     outputs = np.expand_dims(outputs, axis=1)
+                #
+                #     source_image = torchio.ScalarImage(tensor=x, affine=affine)
+                #     source_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-source"+hp.save_arch))
+                #
+                #     label_image_artery = torchio.ScalarImage(tensor=y[0], affine=affine)
+                #     label_image_artery.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_artery"+hp.save_arch))
+                #
+                #     output_image_artery = torchio.ScalarImage(tensor=outputs[0], affine=affine)
+                #     output_image_artery.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_artery"+hp.save_arch))
+                #
+                #     label_image_lung = torchio.ScalarImage(tensor=y[1], affine=affine)
+                #     label_image_lung.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_lung"+hp.save_arch))
+                #
+                #     output_image_lung = torchio.ScalarImage(tensor=outputs[1], affine=affine)
+                #     output_image_lung.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_lung"+hp.save_arch))
+                #
+                #     label_image_trachea = torchio.ScalarImage(tensor=y[2], affine=affine)
+                #     label_image_trachea.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_trachea"+hp.save_arch))
+                #
+                #     output_image_trachea = torchio.ScalarImage(tensor=outputs[2], affine=affine)
+                #     output_image_trachea.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_trachea"+hp.save_arch))
+                #
+                #     label_image_vein = torchio.ScalarImage(tensor=y[3], affine=affine)
+                #     label_image_vein.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_vein"+hp.save_arch))
+                #
+                #     output_image_vein = torchio.ScalarImage(tensor=outputs[3], affine=affine)
+                #     output_image_vein.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_vein"+hp.save_arch))
 
-                    source_image = torchio.ScalarImage(tensor=x, affine=affine)
-                    source_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-source"+hp.save_arch))
-                    # source_image.save(os.path.join(args.output_dir,("step-{}-source.mhd").format(epoch)))
+def calc_metric(preds, gts):
+    gts[gts == 2] = 0
 
-                    label_image = torchio.ScalarImage(tensor=y[1], affine=affine)
-                    label_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt"+hp.save_arch))
+    pred = preds.astype(int)  # float data does not support bit_and and bit_or
+    gdth = gts.astype(int)  # float data does not support bit_and and bit_or
+    fp_array = copy.deepcopy(pred)  # keep pred unchanged
+    fn_array = copy.deepcopy(gdth)
+    gdth_sum = np.sum(gdth)
+    pred_sum = np.sum(pred)
+    intersection = gdth & pred
+    union = gdth | pred
+    intersection_sum = np.count_nonzero(intersection)
+    union_sum = np.count_nonzero(union)
 
-                    output_image = torchio.ScalarImage(tensor=model_output_one_hot[1], affine=affine)
-                    output_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict"+hp.save_arch))
-                else:
-                    y = np.expand_dims(y, axis=1)
-                    outputs = np.expand_dims(outputs, axis=1)
+    tp_array = intersection
+    tmp = pred - gdth
+    fp_array[tmp < 1] = 0
+    tmp2 = gdth - pred
+    fn_array[tmp2 < 1] = 0
+    tn_array = np.ones(gdth.shape) - union
+    tp, fp, fn, tn = np.sum(tp_array), np.sum(fp_array), np.sum(fn_array), np.sum(tn_array)
 
-                    source_image = torchio.ScalarImage(tensor=x, affine=affine)
-                    source_image.save(os.path.join(args.output_dir,f"step-{epoch:04d}-source"+hp.save_arch))
+    smooth = 0.001
+    precision = tp / (pred_sum + smooth)
+    recall = tp / (gdth_sum + smooth)
+    false_positive_rate = fp / (fp + tn + smooth)
+    false_negtive_rate = fn / (fn + tp + smooth)
+    jaccard = intersection_sum / (union_sum + smooth)
+    dice = 2 * intersection_sum / (gdth_sum + pred_sum + smooth)
+    #hausdorff_distance = hd(pred, gdth)
+    if np.any(pred):
+        hausdorff_distance95 = hd95(pred, gdth)
+        asd_pred = np.squeeze(pred.astype(bool))
+        asd_gdth = np.squeeze(gdth.astype(bool))
+        surface_distances = surfdist.compute_surface_distances(asd_gdth, asd_pred, spacing_mm=(1.0, 1.0, 1.0))
+        avg_surf_dist = surfdist.compute_average_surface_distance(surface_distances)
+        aasd = 0.5 * (avg_surf_dist[0] + avg_surf_dist[1])
+    else:
+        hausdorff_distance95 = 100.0
+        aasd = 100.0
 
-                    label_image_artery = torchio.ScalarImage(tensor=y[0], affine=affine)
-                    label_image_artery.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_artery"+hp.save_arch))
-
-                    output_image_artery = torchio.ScalarImage(tensor=outputs[0], affine=affine)
-                    output_image_artery.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_artery"+hp.save_arch))
-
-                    label_image_lung = torchio.ScalarImage(tensor=y[1], affine=affine)
-                    label_image_lung.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_lung"+hp.save_arch))
-
-                    output_image_lung = torchio.ScalarImage(tensor=outputs[1], affine=affine)
-                    output_image_lung.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_lung"+hp.save_arch))
-
-                    label_image_trachea = torchio.ScalarImage(tensor=y[2], affine=affine)
-                    label_image_trachea.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_trachea"+hp.save_arch))
-
-                    output_image_trachea = torchio.ScalarImage(tensor=outputs[2], affine=affine)
-                    output_image_trachea.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_trachea"+hp.save_arch))
-
-                    label_image_vein = torchio.ScalarImage(tensor=y[3], affine=affine)
-                    label_image_vein.save(os.path.join(args.output_dir,f"step-{epoch:04d}-gt_vein"+hp.save_arch))
-
-                    output_image_vein = torchio.ScalarImage(tensor=outputs[3], affine=affine)
-                    output_image_vein.save(os.path.join(args.output_dir,f"step-{epoch:04d}-predict_vein"+hp.save_arch))           
-
-
-    writer.close()
-
+    print('precision:', precision)
+    print('recall:   ', recall)
+    print('dice:     ', dice)
+    print(tp, fp, tn, fn)
+    print('hd95:   ', hausdorff_distance95)
+    print('asd:     ', aasd)
+    return precision, recall, dice, hausdorff_distance95, aasd
 
 def test():
 
@@ -404,7 +457,6 @@ def test():
 
     args = parser.parse_args()
 
-
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = args.cudnn_enabled
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
@@ -413,29 +465,7 @@ def test():
 
     os.makedirs(output_dir_test, exist_ok=True)
 
-    if hp.mode == '2d':
-        #from models.two_d.unet import Unet
-        #model = Unet(in_channels=hp.in_class, classes=hp.out_class+1)
-
-        from models.two_d.miniseg import MiniSeg
-        model = MiniSeg(in_input=hp.in_class, classes=hp.out_class+1)
-
-        #from models.two_d.fcn import FCN32s as fcn
-        #model = fcn(in_class =hp.in_class,n_class=hp.out_class+1)
-
-        # from models.two_d.segnet import SegNet
-        # model = SegNet(input_nbr=hp.in_class,label_nbr=hp.out_class+1)
-
-        #from models.two_d.deeplab import DeepLabV3
-        #model = DeepLabV3(in_class=hp.in_class,class_num=hp.out_class+1)
-
-        #from models.two_d.unetpp import ResNet34UnetPlus
-        #model = ResNet34UnetPlus(num_channels=hp.in_class,num_class=hp.out_class+1)
-
-        #from models.two_d.pspnet import PSPNet
-        #model = PSPNet(in_class=hp.in_class,n_classes=hp.out_class+1)
-
-    elif hp.mode == '3d':
+    if hp.mode == '3d':
         #from models.three_d.unet3d import UNet3D
         #model = UNet3D(in_channels=hp.in_class, out_channels=hp.out_class+1, init_features=32)
 
@@ -454,8 +484,8 @@ def test():
         # from models.three_d.densevoxelnet3d import DenseVoxelNet
         # model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        #from models.three_d.vnet3d import VNet
-        #model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
+        # from models.three_d.vnet3d import VNet
+        # model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
         #from models.three_d.unetr import UNETR
         #model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
@@ -463,30 +493,25 @@ def test():
 
     model = torch.nn.DataParallel(model, device_ids=devicess)
 
-
     print("load model:", args.ckpt)
     print(os.path.join(args.output_dir, args.latest_checkpoint_file))
     ckpt = torch.load(os.path.join(args.output_dir, args.latest_checkpoint_file), map_location=lambda storage, loc: storage)
 
     model.load_state_dict(ckpt["model"])
-
-
     model.cuda()
-
-
 
     test_dataset = MedData_test(source_test_dir,label_test_dir)
     znorm = ZNormalization()
-
-    if hp.mode == '3d':
-        patch_overlap = hp.patch_overlap
-        patch_size = hp.patch_size
-    elif hp.mode == '2d':
-        patch_overlap = hp.patch_overlap
-        patch_size = hp.patch_size
-
-
-    for i,subj in enumerate(test_dataset.subjects):
+    patch_overlap = hp.patch_overlap
+    patch_size = hp.patch_size
+    pre = 0.0
+    rec = 0.0
+    dsc = 0.0
+    hd95 = 0.0
+    asd = 0.0
+    for i,item in enumerate(test_dataset.subjects):
+        subj = item[0]
+        label_path = item[1]
         subj = znorm(subj)
         grid_sampler = torchio.inference.GridSampler(
                 subj,
@@ -502,7 +527,7 @@ def test():
             for patches_batch in tqdm(patch_loader):
 
 
-                input_tensor = patches_batch['source'][torchio.DATA].to(device)
+                input_tensor = patches_batch['source'][torchio.DATA]#.to(device)
                 locations = patches_batch[torchio.LOCATION]
 
                 if hp.mode == '2d':
@@ -525,50 +550,27 @@ def test():
         # output_tensor = aggregator.get_output_tensor()
         output_tensor_1 = aggregator_1.get_output_tensor()
 
-
-
-
         affine = subj['source']['affine']
         if (hp.in_class == 1) and (hp.out_class == 1) :
             # label_image = torchio.ScalarImage(tensor=output_tensor.numpy(), affine=affine)
             # label_image.save(os.path.join(output_dir_test,f"{i:04d}-result_float"+hp.save_arch))
+            print(label_path)
+            precision, recall, dice, hd_95, aasd = calc_metric(output_tensor_1.numpy(), subj['label'][tio.DATA].numpy())
+            pre += precision
+            rec += recall
+            dsc += dice
+            hd95 += hd_95
+            asd += aasd
+            # output_image = torchio.ScalarImage(tensor=output_tensor_1.numpy(), affine=affine)
+            # output_image.save(os.path.join(output_dir_test,f"{i:04d}-result_int"+hp.save_arch))
 
-            # f"{str(i):04d}-result_float.mhd"
+    print('-----------------------------')
+    print('precision:', pre / len(test_dataset.subjects))
+    print('recall:   ', rec / len(test_dataset.subjects))
+    print('dice:     ', dsc / len(test_dataset.subjects))
+    print('hd95:   ', hd95 / len(test_dataset.subjects))
+    print('asd:     ', asd / len(test_dataset.subjects))
 
-            output_image = torchio.ScalarImage(tensor=output_tensor_1.numpy(), affine=affine)
-            output_image.save(os.path.join(output_dir_test,f"{i:04d}-result_int"+hp.save_arch))
-        else:
-            output_tensor = output_tensor.unsqueeze(1)
-            output_tensor_1= output_tensor_1.unsqueeze(1)
-
-            output_image_artery_float = torchio.ScalarImage(tensor=output_tensor[0].numpy(), affine=affine)
-            output_image_artery_float.save(os.path.join(output_dir_test,f"{i:04d}-result_float_artery"+hp.save_arch))
-            # f"{str(i):04d}-result_float_artery.mhd"
-
-            output_image_artery_int = torchio.ScalarImage(tensor=output_tensor_1[0].numpy(), affine=affine)
-            output_image_artery_int.save(os.path.join(output_dir_test,f"{i:04d}-result_int_artery"+hp.save_arch))
-
-            output_image_lung_float = torchio.ScalarImage(tensor=output_tensor[1].numpy(), affine=affine)
-            output_image_lung_float.save(os.path.join(output_dir_test,f"{i:04d}-result_float_lung"+hp.save_arch))
-            
-
-            output_image_lung_int = torchio.ScalarImage(tensor=output_tensor_1[1].numpy(), affine=affine)
-            output_image_lung_int.save(os.path.join(output_dir_test,f"{i:04d}-result_int_lung"+hp.save_arch))
-
-            output_image_trachea_float = torchio.ScalarImage(tensor=output_tensor[2].numpy(), affine=affine)
-            output_image_trachea_float.save(os.path.join(output_dir_test,f"{i:04d}-result_float_trachea"+hp.save_arch))
-
-            output_image_trachea_int = torchio.ScalarImage(tensor=output_tensor_1[2].numpy(), affine=affine)
-            output_image_trachea_int.save(os.path.join(output_dir_test,f"{i:04d}-result_int_trachea"+hp.save_arch))
-
-            output_image_vein_float = torchio.ScalarImage(tensor=output_tensor[3].numpy(), affine=affine)
-            output_image_vein_float.save(os.path.join(output_dir_test,f"{i:04d}-result_float_vein"+hp.save_arch))
-
-            output_image_vein_int = torchio.ScalarImage(tensor=output_tensor_1[3].numpy(), affine=affine)
-            output_image_vein_int.save(os.path.join(output_dir_test,f"{i:04d}-result_int_vein"+hp.save_arch))           
-
-
-   
 
 if __name__ == '__main__':
     if hp.train_or_test == 'train':

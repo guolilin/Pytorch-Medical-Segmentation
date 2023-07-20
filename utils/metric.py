@@ -43,4 +43,4 @@ def metric(gt,pred):
     jaccard = intersection_sum / (union_sum + smooth)
     dice = 2 * intersection_sum / (gdth_sum + pred_sum + smooth)
 
-    return false_positive_rate,false_negtive_rate,dice
+    return precision,recall,dice
