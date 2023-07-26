@@ -80,8 +80,7 @@ class MedData_train(torch.utils.data.Dataset):
                 grid_sampler = torchio.inference.GridSampler(
                         subject,
                         hp.patch_size,
-                        #hp.patch_overlap,
-                        (48, 48, 48),
+                        hp.patch_overlap,
                 )
                 pos = 0
                 neg = 0

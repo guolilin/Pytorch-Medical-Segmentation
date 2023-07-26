@@ -140,6 +140,9 @@ def train():
         # from models.three_d.unetr import UNETR
         # model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
 
+        from models.three_d.group_vit import GroupViT
+        model = GroupViT(img_size=(hp.patch_size))
+
 
 
     model = torch.nn.DataParallel(model, device_ids=devicess)
