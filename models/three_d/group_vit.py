@@ -34,9 +34,32 @@ def resize_attn_map(attentions, d, h, w, align_corners=False):
     attentions = rearrange(
         attentions, 'bs nh (d h w) c -> (bs nh) c d h w', bs=bs, nh=nh, d=f, h=f, w=f, c=groups)
     attentions = F.interpolate(attentions, size=(d, h, w), mode='trilinear', align_corners=align_corners)
-    #  [bs*nh, groups, d, h, w] -> [bs, nh, groups,d,h,w]
-    attentions = rearrange(attentions, '(bs nh) c d h w -> bs nh c d h w', bs=bs, nh=nh, d=d, h=h, w=w, c=groups)
+    #  [bs*nh, groups, d, h, w] -> [bs, nh, d, h, w, groups]
+    attentions = rearrange(attentions, '(bs nh) c d h w -> bs nh d h w c', bs=bs, nh=nh, d=d, h=h, w=w, c=groups)
     return attentions
+
+
+class ProjectMLP(nn.Module):
+
+    def __init__(self, in_dim=256, inner_dim=2048, out_dim=256, num_layers=2):
+        super(ProjectMLP, self).__init__()
+        # hidden layers
+        linear_hidden = []
+        for i in range(num_layers - 1):
+            linear_hidden.append(nn.Conv1d(in_dim if i == 0 else inner_dim, inner_dim, kernel_size=1))
+            linear_hidden.append(nn.BatchNorm1d(inner_dim))
+            linear_hidden.append(nn.ReLU(inplace=True))
+        self.linear_hidden = nn.Sequential(*linear_hidden)
+
+        self.linear_out = nn.Conv1d(
+            in_dim if num_layers == 1 else inner_dim, out_dim, kernel_size=1) if num_layers >= 1 else nn.Identity()
+
+    def forward(self, x):
+        x = rearrange(x, 'b l c -> b c l')
+        x = self.linear_hidden(x)
+        x = self.linear_out(x)
+        x = rearrange(x, 'b c l -> b l c')
+        return x
 
 
 class Mlp(nn.Module):
@@ -628,11 +651,10 @@ class GroupViT(nn.Module):
                  patch_size=4,
                  in_chans=1,
                  embed_dim=96, #384,
-                 embed_factors=[1, 1, 1],
-                 depths=[6, 3, 3],
-                 num_heads=[6, 6, 6],
-                 num_group_tokens=[16, 2, 0],#[64, 8, 0],
-                 num_output_groups=[16, 2],#[64, 8],
+                 embed_factors=[1, 1],
+                 depths=[3, 3],
+                 num_heads=[2, 2],
+                 num_group_tokens=[8, 2],#[64, 8, 0],
                  hard_assignment=True,
                  mlp_ratio=4.,
                  qkv_bias=True,
@@ -640,14 +662,12 @@ class GroupViT(nn.Module):
                  drop_rate=0.,
                  attn_drop_rate=0.,
                  drop_path_rate=0.1,
+                 proj_num_layers=2,
                  patch_norm=True,
                  use_checkpoint=False,
-                 freeze_patch_embed=False):
+                 freeze_patch_embed=True):
         super().__init__()
         assert patch_size in [4, 8, 16]
-        assert len(embed_factors) == len(depths) == len(num_group_tokens)
-        assert all(_ == 0 for _ in num_heads) or len(depths) == len(num_heads)
-        assert len(depths) - 1 == len(num_output_groups)
 
         self.num_layers = len(depths)
         self.embed_dim = embed_dim
@@ -660,7 +680,11 @@ class GroupViT(nn.Module):
         self.attn_drop_rate = attn_drop_rate
         self.drop_path_rate = drop_path_rate
         self.num_group_tokens = num_group_tokens
-        self.num_output_groups = num_output_groups
+
+        # self.img_projector = ProjectMLP(
+        #     in_dim=self.num_features, num_layers=proj_num_layers, out_dim=2)
+        self.img_projector = ProjectMLP(
+            in_dim=2, inner_dim=64, out_dim=2, num_layers=proj_num_layers)
 
         norm_layer = nn.LayerNorm
         self.patch_embed = PatchEmbed(
@@ -695,18 +719,18 @@ class GroupViT(nn.Module):
 
             dim = int(embed_dim * embed_factors[i_layer])
             downsample = None
-            if i_layer < self.num_layers - 1:
-                out_dim = embed_dim * embed_factors[i_layer + 1]
-                downsample = GroupingBlock(
-                    dim=dim,
-                    out_dim=out_dim,
-                    num_heads=num_heads[i_layer],
-                    num_group_token=num_group_tokens[i_layer],
-                    num_output_group=num_output_groups[i_layer],
-                    norm_layer=norm_layer,
-                    hard=hard_assignment,
-                    gumbel=hard_assignment)
-                num_output_token = num_output_groups[i_layer]
+            # if i_layer < self.num_layers - 1:
+            out_dim = dim
+            downsample = GroupingBlock(
+                dim=dim,
+                out_dim=out_dim,
+                num_heads=num_heads[i_layer],
+                num_group_token=num_group_tokens[i_layer],
+                num_output_group=num_group_tokens[i_layer],
+                norm_layer=norm_layer,
+                hard=hard_assignment,
+                gumbel=hard_assignment)
+            num_output_token = num_group_tokens[i_layer]
 
             if i_layer > 0 and num_group_tokens[i_layer] > 0:
                 prev_dim = int(embed_dim * embed_factors[i_layer - 1])
@@ -797,10 +821,10 @@ class GroupViT(nn.Module):
                 prev_attn_masks = attn_masks
             else:
                 prev_attn_masks = prev_attn_masks @ attn_masks
-            # [B, nH, DxHxW, G] -> [B, nH, G, D, H, W]
+            # [B, nH, DxHxW, G] -> [B, nH, D, H, W, G]
             attn_map = resize_attn_map(prev_attn_masks, *img.shape[-3:])
             assert attn_map.shape[1] == 1
-            # [B, G, D, H, W]
+            # [B, D, H, W, G]
             attn_map = attn_map.squeeze(1)
             attn_maps.append(attn_map)
 
@@ -810,4 +834,8 @@ class GroupViT(nn.Module):
     def forward(self, x):
         x_feat, group_token, attn_dicts = self.forward_features(x)
         attn_map = self.get_attn_maps(x, attn_dicts)[-1]
+        bs, d, h, w, g = attn_map.shape
+        attn_map = rearrange(attn_map, 'b d h w g -> b (d h w) g')
+        attn_map = self.img_projector(attn_map)
+        attn_map = rearrange(attn_map, 'b (d h w) g -> b g d h w', b=bs, d=d, h=h, w=w, g=g)
         return attn_map

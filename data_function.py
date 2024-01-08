@@ -116,6 +116,8 @@ class MedData_train(torch.utils.data.Dataset):
                 # print('neg_sample: ', neg_sample)
                 sum_pos += pos_sample
                 sum_neg += neg_sample
+                # if sum_pos > 0 and sum_neg > 0:
+                #     break
             print(sum_pos, sum_neg)
 
         else:
@@ -213,13 +215,18 @@ class MedData_test(torch.utils.data.Dataset):
             self.image_paths = sorted(images_dir.glob(hp.fold_arch))
             labels_dir = Path(labels_dir)
             self.label_paths = sorted(labels_dir.glob(hp.fold_arch))
-
+            idx = 0
             for (image_path, label_path) in zip(self.image_paths, self.label_paths):
+                #if idx >= 20:
+                #    break
+                #if str(label_path).split('/')[-1] != 'label_10060F.nii.gz':
+                #    continue
                 subject = tio.Subject(
                     source=tio.ScalarImage(image_path),
                     label=tio.LabelMap(label_path),
                 )
                 self.subjects.append([subject, label_path])
+                idx += 1
 
 
 

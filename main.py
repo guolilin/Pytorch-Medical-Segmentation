@@ -116,11 +116,11 @@ def train():
         #model = PSPNet(in_class=hp.in_class,n_classes=hp.out_class+1)
 
     elif hp.mode == '3d':
-        #from models.three_d.unet3d import UNet3D
-        #model = UNet3D(in_channels=hp.in_class, out_channels=hp.out_class+1, init_features=32)
+        # from models.three_d.unet3d import UNet3D
+        # model = UNet3D(in_channels=hp.in_class, out_channels=hp.out_class+1, init_features=32)
 
-        from models.three_d.residual_unet3d import UNet
-        model = UNet(in_channels=hp.in_class, n_classes=hp.out_class+1, base_n_filter=2)
+        # from models.three_d.residual_unet3d import UNet
+        # model = UNet(in_channels=hp.in_class, n_classes=hp.out_class+1, base_n_filter=2)
 
         #from models.three_d.fcn3d import FCN_Net
         #model = FCN_Net(in_channels =hp.in_class,n_class =hp.out_class+1)
@@ -131,8 +131,8 @@ def train():
         # from models.three_d.densenet3d import SkipDenseNet3D
         # model = SkipDenseNet3D(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        # from models.three_d.densevoxelnet3d import DenseVoxelNet
-        # model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
+        from models.three_d.densevoxelnet3d import DenseVoxelNet
+        model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
         # from models.three_d.vnet3d import VNet
         # model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
@@ -140,8 +140,8 @@ def train():
         # from models.three_d.unetr import UNETR
         # model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
 
-        from models.three_d.group_vit import GroupViT
-        model = GroupViT(img_size=(hp.patch_size))
+        # from models.three_d.group_vit import GroupViT
+        # model = GroupViT(img_size=(hp.patch_size))
 
 
 
@@ -406,8 +406,8 @@ def train():
 def calc_metric(preds, gts):
     gts[gts == 2] = 0
 
-    pred = preds.astype(int)  # float data does not support bit_and and bit_or
-    gdth = gts.astype(int)  # float data does not support bit_and and bit_or
+    pred = preds.astype(np.int8)  # float data does not support bit_and and bit_or
+    gdth = gts.astype(np.int8)  # float data does not support bit_and and bit_or
     fp_array = copy.deepcopy(pred)  # keep pred unchanged
     fn_array = copy.deepcopy(gdth)
     gdth_sum = np.sum(gdth)
@@ -433,6 +433,7 @@ def calc_metric(preds, gts):
     jaccard = intersection_sum / (union_sum + smooth)
     dice = 2 * intersection_sum / (gdth_sum + pred_sum + smooth)
     #hausdorff_distance = hd(pred, gdth)
+    '''
     if np.any(pred):
         hausdorff_distance95 = hd95(pred, gdth)
         asd_pred = np.squeeze(pred.astype(bool))
@@ -443,13 +444,16 @@ def calc_metric(preds, gts):
     else:
         hausdorff_distance95 = 100.0
         aasd = 100.0
+    '''
 
+    hausdorff_distance95=0 
+    aasd=0
     print('precision:', precision)
     print('recall:   ', recall)
     print('dice:     ', dice)
     print(tp, fp, tn, fn)
-    print('hd95:   ', hausdorff_distance95)
-    print('asd:     ', aasd)
+    #print('hd95:   ', hausdorff_distance95)
+    #print('asd:     ', aasd)
     return precision, recall, dice, hausdorff_distance95, aasd
 
 def test():
@@ -472,23 +476,23 @@ def test():
         #from models.three_d.unet3d import UNet3D
         #model = UNet3D(in_channels=hp.in_class, out_channels=hp.out_class+1, init_features=32)
 
-        from models.three_d.residual_unet3d import UNet
-        model = UNet(in_channels=hp.in_class, n_classes=hp.out_class+1, base_n_filter=2)
+        #from models.three_d.residual_unet3d import UNet
+        #model = UNet(in_channels=hp.in_class, n_classes=hp.out_class+1, base_n_filter=2)
 
-        #from models.three_d.fcn3d import FCN_Net
-        #model = FCN_Net(in_channels =hp.in_class,n_class =hp.out_class+1)
+        # from models.three_d.fcn3d import FCN_Net
+        # model = FCN_Net(in_channels =hp.in_class,n_class =hp.out_class+1)
 
-        #from models.three_d.highresnet import HighRes3DNet
-        #model = HighRes3DNet(in_channels=hp.in_class,out_channels=hp.out_class+1)
+        # from models.three_d.highresnet import HighRes3DNet
+        # model = HighRes3DNet(in_channels=hp.in_class,out_channels=hp.out_class+1)
 
-        #from models.three_d.densenet3d import SkipDenseNet3D
-        #model = SkipDenseNet3D(in_channels=hp.in_class, classes=hp.out_class+1)
+        # from models.three_d.densenet3d import SkipDenseNet3D
+        # model = SkipDenseNet3D(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        # from models.three_d.densevoxelnet3d import DenseVoxelNet
-        # model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
+        #from models.three_d.densevoxelnet3d import DenseVoxelNet
+        #model = DenseVoxelNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
-        # from models.three_d.vnet3d import VNet
-        # model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
+        from models.three_d.vnet3d import VNet
+        model = VNet(in_channels=hp.in_class, classes=hp.out_class+1)
 
         #from models.three_d.unetr import UNETR
         #model = UNETR(img_shape=(hp.crop_or_pad_size), input_dim=hp.in_class, output_dim=hp.out_class+1)
@@ -512,6 +516,7 @@ def test():
     dsc = 0.0
     hd95 = 0.0
     asd = 0.0
+    cct = 0.0
     for i,item in enumerate(test_dataset.subjects):
         subj = item[0]
         label_path = item[1]
@@ -521,11 +526,11 @@ def test():
                 patch_size,
                 patch_overlap,
             )
-
         patch_loader = torch.utils.data.DataLoader(grid_sampler, batch_size=args.batch)
         # aggregator = torchio.inference.GridAggregator(grid_sampler)
         aggregator_1 = torchio.inference.GridAggregator(grid_sampler)
         model.eval()
+        ctime = 0
         with torch.no_grad():
             for patches_batch in tqdm(patch_loader):
 
@@ -535,7 +540,9 @@ def test():
 
                 if hp.mode == '2d':
                     input_tensor = input_tensor.squeeze(4)
+                begin = time.time()
                 outputs = model(input_tensor)
+                ctime += time.time() - begin
 
                 if hp.mode == '2d':
                     outputs = outputs.unsqueeze(4)
@@ -552,7 +559,8 @@ def test():
                 aggregator_1.add_batch(labels.unsqueeze(1), locations)
         # output_tensor = aggregator.get_output_tensor()
         output_tensor_1 = aggregator_1.get_output_tensor()
-
+        ctime = ctime / len(patch_loader) / args.batch
+        print(ctime)
         affine = subj['source']['affine']
         if (hp.in_class == 1) and (hp.out_class == 1) :
             # label_image = torchio.ScalarImage(tensor=output_tensor.numpy(), affine=affine)
@@ -564,15 +572,17 @@ def test():
             dsc += dice
             hd95 += hd_95
             asd += aasd
-            # output_image = torchio.ScalarImage(tensor=output_tensor_1.numpy(), affine=affine)
-            # output_image.save(os.path.join(output_dir_test,f"{i:04d}-result_int"+hp.save_arch))
+            cct += ctime
+            output_image = torchio.ScalarImage(tensor=output_tensor_1.numpy(), affine=affine)
+            output_image.save(output_dir_test + str(label_path).split('/')[-1].split('.nii')[0] + "_result" + hp.save_arch)
 
     print('-----------------------------')
     print('precision:', pre / len(test_dataset.subjects))
     print('recall:   ', rec / len(test_dataset.subjects))
     print('dice:     ', dsc / len(test_dataset.subjects))
-    print('hd95:   ', hd95 / len(test_dataset.subjects))
-    print('asd:     ', asd / len(test_dataset.subjects))
+    #print('hd95:     ', hd95 / len(test_dataset.subjects))
+    #print('asd:      ', asd / len(test_dataset.subjects))
+    print('cct:      ', cct / len(test_dataset.subjects))
 
 
 if __name__ == '__main__':
